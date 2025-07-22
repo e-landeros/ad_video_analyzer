@@ -570,9 +570,14 @@ class AnalyzerRegistry:
         return cls._registry[analyzer_type]
 
 
+# Note: The AnalysisPipelineOrchestrator class has been deprecated in favor of
+# the more comprehensive AnalysisPipeline class in video_analyzer/services/pipeline.py.
+# This class is kept here for backward compatibility but will be removed in a future version.
 class AnalysisPipelineOrchestrator:
     """
     Orchestrates the analysis pipeline.
+
+    DEPRECATED: Use AnalysisPipeline from video_analyzer.services.pipeline instead.
 
     This class manages the execution of multiple analyzers on a video, handling
     dependencies, progress tracking, and cancellation.
@@ -585,13 +590,25 @@ class AnalysisPipelineOrchestrator:
         Args:
             config: Optional configuration for the orchestrator
         """
-        self.config = config or {}
+        import warnings
+        from video_analyzer.services.pipeline import AnalysisPipeline
+        from video_analyzer.config.analysis_pipeline import AnalysisPipelineConfig
+
+        warnings.warn(
+            "AnalysisPipelineOrchestrator is deprecated. Use AnalysisPipeline from "
+            "video_analyzer.services.pipeline instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        # Create a proper config object if a dict was provided
+        if config is not None and not isinstance(config, AnalysisPipelineConfig):
+            config = AnalysisPipelineConfig(**config)
+
+        # Create an AnalysisPipeline instance that we'll delegate to
+        self._pipeline = AnalysisPipeline(config)
         self.analyzers: List[BaseAnalyzer] = []
-        self.progress_callback: Optional[AnalysisProgressCallback] = None
-        self.cancellation_token: Optional[AnalysisCancellationToken] = None
-        self._start_time = None
-        self._end_time = None
-        logger.debug("Initializing AnalysisPipelineOrchestrator")
+        logger.debug("Initializing AnalysisPipelineOrchestrator (deprecated)")
 
     def add_analyzer(self, analyzer: BaseAnalyzer) -> None:
         """
@@ -601,6 +618,7 @@ class AnalysisPipelineOrchestrator:
             analyzer: The analyzer to add
         """
         self.analyzers.append(analyzer)
+        self._pipeline.register_analyzer(analyzer)
         logger.debug(f"Added analyzer {analyzer.analyzer_id} to pipeline")
 
     def remove_analyzer(self, analyzer_id: str) -> None:
@@ -611,6 +629,13 @@ class AnalysisPipelineOrchestrator:
             analyzer_id: The ID of the analyzer to remove
         """
         self.analyzers = [a for a in self.analyzers if a.analyzer_id != analyzer_id]
+        # Note: AnalysisPipeline doesn't support removing analyzers, so we recreate it
+        from video_analyzer.config.analysis_pipeline import AnalysisPipelineConfig
+
+        config = self._pipeline.config
+        self._pipeline = AnalysisPipeline(config)
+        for analyzer in self.analyzers:
+            self._pipeline.register_analyzer(analyzer)
         logger.debug(f"Removed analyzer {analyzer_id} from pipeline")
 
     def set_progress_callback(self, callback: AnalysisProgressCallback) -> None:
@@ -620,7 +645,10 @@ class AnalysisPipelineOrchestrator:
         Args:
             callback: The progress callback
         """
-        self.progress_callback = callback
+        if isinstance(callback, AnalysisProgressCallback):
+            self._pipeline.set_progress_callback(callback.on_progress)
+        else:
+            self._pipeline.set_progress_callback(callback)
 
     def set_cancellation_token(self, token: AnalysisCancellationToken) -> None:
         """
@@ -629,7 +657,7 @@ class AnalysisPipelineOrchestrator:
         Args:
             token: The cancellation token
         """
-        self.cancellation_token = token
+        self._pipeline.create_cancellation_token = lambda: token
 
     async def run_analysis(self, video_data: VideoData) -> Dict[str, AnalysisResult]:
         """
@@ -641,72 +669,7 @@ class AnalysisPipelineOrchestrator:
         Returns:
             Dict[str, AnalysisResult]: A dictionary mapping analyzer IDs to their results
         """
-        self._start_time = time.time()
-        logger.info(f"Starting analysis pipeline for video {video_data.path}")
-
-        results: Dict[str, AnalysisResult] = {}
-
-        # Determine execution order based on dependencies
-        execution_order = self._determine_execution_order()
-
-        # Run analyzers in the determined order
-        for analyzer in execution_order:
-            try:
-                # Skip if already analyzed (due to dependency resolution)
-                if analyzer.analyzer_id in results:
-                    continue
-
-                # Run the analyzer
-                result = await analyzer.analyze_with_progress(
-                    video_data, self.progress_callback, self.cancellation_token
-                )
-
-                # Store the result
-                results[analyzer.analyzer_id] = result
-
-            except CancellationError:
-                logger.warning(
-                    f"Analysis pipeline cancelled during {analyzer.analyzer_id}"
-                )
-                raise
-            except Exception as e:
-                logger.error(
-                    f"Error in analyzer {analyzer.analyzer_id}: {str(e)}", exc_info=True
-                )
-                # Continue with other analyzers unless configured to fail fast
-                if self.config.get("fail_fast", False):
-                    raise
-
-        self._end_time = time.time()
-        logger.info(f"Analysis pipeline completed in {self.execution_time:.2f} seconds")
-
-        return results
-
-    def _determine_execution_order(self) -> List[BaseAnalyzer]:
-        """
-        Determine the execution order of analyzers based on dependencies.
-
-        Returns:
-            List[BaseAnalyzer]: The analyzers in execution order
-        """
-        # Simple topological sort
-        visited = set()
-        execution_order = []
-
-        def visit(analyzer: BaseAnalyzer):
-            if analyzer in visited:
-                return
-            visited.add(analyzer)
-
-            for dependency in analyzer._dependencies:
-                visit(dependency)
-
-            execution_order.append(analyzer)
-
-        for analyzer in self.analyzers:
-            visit(analyzer)
-
-        return execution_order
+        return await self._pipeline.run_analysis(video_data)
 
     @property
     def execution_time(self) -> float:
@@ -716,9 +679,7 @@ class AnalysisPipelineOrchestrator:
         Returns:
             float: The execution time, or 0 if no analysis has been run
         """
-        if self._start_time is None or self._end_time is None:
-            return 0
-        return self._end_time - self._start_time
+        return self._pipeline.execution_time or 0
 
     @property
     def metadata(self) -> Dict[str, Any]:
@@ -731,7 +692,9 @@ class AnalysisPipelineOrchestrator:
         return {
             "analyzers": [a.analyzer_id for a in self.analyzers],
             "execution_time": self.execution_time,
-            "config": self.config,
+            "config": self._pipeline.config.dict()
+            if hasattr(self._pipeline.config, "dict")
+            else self._pipeline.config,
         }
 
 
