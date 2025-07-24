@@ -107,7 +107,7 @@ class VideoData(BaseModel):
             raise ValueError(f"Video resolution dimensions must be positive, got {v}")
         return v
 
-    @root_validator
+    @root_validator(skip_on_failure=True)
     def validate_frames_timestamps(cls, values):
         """Validate that frame timestamps are within video duration."""
         frames = values.get("frames", [])

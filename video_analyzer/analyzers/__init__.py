@@ -12,6 +12,7 @@ from video_analyzer.analyzers.base import (
     AnalysisPipelineOrchestrator,
 )
 from video_analyzer.analyzers.hook_analyzer import HookAnalyzer
+from video_analyzer.analyzers.emotion_analyzer import EmotionAnalyzer
 
 __all__ = [
     "BaseAnalyzer",
@@ -20,4 +21,5 @@ __all__ = [
     "AnalysisCancellationToken",
     "AnalysisPipelineOrchestrator",
     "HookAnalyzer",
+    "EmotionAnalyzer",
 ]

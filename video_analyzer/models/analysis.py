@@ -100,7 +100,7 @@ class HookAnalysisResult(AnalysisResult):
             raise ValueError(f"Time values must be non-negative, got {v}")
         return v
 
-    @root_validator
+    @root_validator(skip_on_failure=True)
     def validate_hook_times(cls, values):
         """Validate that hook_end_time is after hook_start_time."""
         start = values.get("hook_start_time")
